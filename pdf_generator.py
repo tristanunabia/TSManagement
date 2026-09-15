@@ -61,10 +61,11 @@ def generate_pdf_timesheet(instructor_row, class_loads_df, year, month, selected
     
     # 2. Metadata Block (Instructor details)
     month_name = calendar.month_name[month]
+    acad_level = instructor_row["academic_level"] if "academic_level" in instructor_row.keys() else "Tertiary"
     meta_data = [
         [
             Paragraph("Instructor Name:", meta_label_style), Paragraph(instructor_row["name"], meta_value_style),
-            Paragraph("Employment Status:", meta_label_style), Paragraph(instructor_row["employment_status"], meta_value_style)
+            Paragraph("Employment Status:", meta_label_style), Paragraph(f"{instructor_row['employment_status']} ({acad_level})", meta_value_style)
         ],
         [
             Paragraph("Cutoff Period:", meta_label_style), Paragraph(f"{month_name} {selected_cutoff}, {year}", meta_value_style),
@@ -95,20 +96,26 @@ def generate_pdf_timesheet(instructor_row, class_loads_df, year, month, selected
     
     table_data = [row_dates, row_weekdays]
     
-    # Prepare rows
-    teaching_classes = class_loads_df[class_loads_df["load_category"].isin(["Regular Load", "Excess/Overload"])]
+    # Prepare rows: Separate Regular Load and Excess Load
+    regular_classes = class_loads_df[class_loads_df["load_category"] == "Regular Load"]
+    excess_classes = class_loads_df[class_loads_df["load_category"].isin(["Excess Load", "Excess/Overload"])]
     activity_rows = []
     
-    # Section A
-    for _, cl in teaching_classes.iterrows():
+    # Section A: Regular Load
+    for _, cl in regular_classes.iterrows():
         key_name = f"{cl['type']}: {cl['subject_name']} ({cl['section_code']})"
-        activity_rows.append(("Teaching Activities", key_name, key_name))
+        activity_rows.append(("Regular Load", key_name, key_name))
         
-    # Section B
+    # Section B: Excess Load
+    for _, cl in excess_classes.iterrows():
+        key_name = f"{cl['type']}: {cl['subject_name']} ({cl['section_code']})"
+        activity_rows.append(("Excess Load", key_name, key_name))
+        
+    # Section C
     activity_rows.append(("Non-Teaching SC", "Career Orientation Seminars (COS)", "Career Orientation Seminars (COS)"))
     activity_rows.append(("Non-Teaching SC", "Guidance/Counseling", "Guidance/Counseling"))
     
-    # Section C
+    # Section D
     activity_rows.append(("Non-Teaching HQ", "Consultation", "Consultation"))
     activity_rows.append(("Non-Teaching HQ", "Administrative Hours", "Administrative Hours"))
     
@@ -170,9 +177,23 @@ def generate_pdf_timesheet(instructor_row, class_loads_df, year, month, selected
             # Get hours
             val = timesheet_data.get((key_name, date_str))
             if val is None:
-                if cat == "Teaching Activities":
+                if cat == "Regular Load":
                     val = 0.0
-                    for _, cl in teaching_classes.iterrows():
+                    for _, cl in regular_classes.iterrows():
+                        cl_key = f"{cl['type']}: {cl['subject_name']} ({cl['section_code']})"
+                        if cl_key == key_name and cl['day_of_week'] == d_info['day_abbr']:
+                            val = cl['hours']
+                            break
+                elif cat == "Excess Load":
+                    val = 0.0
+                    for _, cl in excess_classes.iterrows():
+                        cl_key = f"{cl['type']}: {cl['subject_name']} ({cl['section_code']})"
+                        if cl_key == key_name and cl['day_of_week'] == d_info['day_abbr']:
+                            val = cl['hours']
+                            break
+                elif cat == "Teaching Activities":
+                    val = 0.0
+                    for _, cl in pd.concat([regular_classes, excess_classes]).iterrows():
                         cl_key = f"{cl['type']}: {cl['subject_name']} ({cl['section_code']})"
                         if cl_key == key_name and cl['day_of_week'] == d_info['day_abbr']:
                             val = cl['hours']

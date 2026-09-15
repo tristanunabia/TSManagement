@@ -194,7 +194,7 @@ def create_class_load_sheet(wb, class_loads):
     ws.views.sheetView[0].showGridLines = True
     
     # Title Banner
-    ws.merge_cells("A1:K1")
+    ws.merge_cells("A1:J1")
     ws["A1"] = "CLASS LOAD DIRECTORY (1st24)"
     ws["A1"].font = Font(name="Calibri", size=15, bold=True, color=TEXT_LIGHT)
     ws["A1"].fill = PatternFill(start_color=PRIMARY_COLOR, end_color=PRIMARY_COLOR, fill_type="solid")
@@ -204,7 +204,7 @@ def create_class_load_sheet(wb, class_loads):
     # Table Headers
     headers = [
         "Subject Name", "Section Code", "Room", "Day", "Start Time", 
-        "End Time", "Type", "Units", "Hours", "Load Category", "Enrollment"
+        "End Time", "Type", "Units", "Hours", "Load Category"
     ]
     for c_idx, h in enumerate(headers, start=1):
         cell = ws.cell(row=3, column=c_idx, value=h)
@@ -253,10 +253,6 @@ def create_class_load_sheet(wb, class_loads):
         cat_cell = ws.cell(row=row_num, column=10, value=row["load_category"])
         cat_cell.border = thin_border
         
-        enrol_cell = ws.cell(row=row_num, column=11, value=row["enrollment"])
-        enrol_cell.alignment = Alignment(horizontal="right")
-        enrol_cell.border = thin_border
-        
     # Totals Row
     total_row = num_rows + 4
     ws.row_dimensions[total_row].height = 22
@@ -288,12 +284,6 @@ def create_class_load_sheet(wb, class_loads):
     ws.cell(row=total_row, column=10).border = thin_border
     ws.cell(row=total_row, column=10).fill = PatternFill(start_color=SECONDARY_COLOR, end_color=SECONDARY_COLOR, fill_type="solid")
     
-    # Enrollment formula
-    cell_enrol = ws.cell(row=total_row, column=11, value=f"=SUM(K4:K{total_row-1})")
-    cell_enrol.font = Font(bold=True)
-    cell_enrol.border = thin_border
-    cell_enrol.fill = PatternFill(start_color=SECONDARY_COLOR, end_color=SECONDARY_COLOR, fill_type="solid")
-    
     # Columns width
     ws.column_dimensions["A"].width = 24
     ws.column_dimensions["B"].width = 14
@@ -305,7 +295,6 @@ def create_class_load_sheet(wb, class_loads):
     ws.column_dimensions["H"].width = 8
     ws.column_dimensions["I"].width = 8
     ws.column_dimensions["J"].width = 18
-    ws.column_dimensions["K"].width = 12
 
 def create_timesheet_sheet(wb, sheet_title, instructor, class_loads, year, month, cutoff_type, timesheet_data):
     ws = wb.create_sheet(title=sheet_title)
@@ -328,10 +317,10 @@ def create_timesheet_sheet(wb, sheet_title, instructor, class_loads, year, month
     ws.row_dimensions[1].height = 40
     
     # Header metadata
-    # Format month name
     month_name = calendar.month_name[month]
+    acad_level = instructor.get("academic_level", "Tertiary")
     headers_meta = [
-        ("Instructor Name:", instructor["name"], "Employment Status:", instructor["employment_status"]),
+        ("Instructor Name:", instructor["name"], "Employment Status:", f"{instructor['employment_status']} ({acad_level})"),
         ("Cutoff Period:", f"{month_name} {cutoff_type}, {year}", "Department:", instructor.get("department", "N/A"))
     ]
     for r_idx, row_data in enumerate(headers_meta, start=2):
@@ -392,21 +381,27 @@ def create_timesheet_sheet(wb, sheet_title, instructor, class_loads, year, month
     ws.row_dimensions[6].height = 18
     
     # Construct rows of activities
-    # Standard Activities
-    teaching_classes = class_loads[class_loads["load_category"].isin(["Regular Load", "Excess/Overload"])]
+    # Separate Regular Load and Excess Load
+    regular_classes = class_loads[class_loads["load_category"] == "Regular Load"]
+    excess_classes = class_loads[class_loads["load_category"].isin(["Excess Load", "Excess/Overload"])]
     
     activity_rows = []
     
-    # Section A: Teaching Activities
-    for _, cl in teaching_classes.iterrows():
+    # Section A: Regular Load
+    for _, cl in regular_classes.iterrows():
         key_name = f"{cl['type']}: {cl['subject_name']} ({cl['section_code']})"
-        activity_rows.append(("Teaching Activities", key_name, key_name))
+        activity_rows.append(("Regular Load", key_name, key_name))
         
-    # Section B: Non-Teaching SC
+    # Section B: Excess Load
+    for _, cl in excess_classes.iterrows():
+        key_name = f"{cl['type']}: {cl['subject_name']} ({cl['section_code']})"
+        activity_rows.append(("Excess Load", key_name, key_name))
+        
+    # Section C: Non-Teaching SC
     activity_rows.append(("Non-Teaching SC", "Career Orientation Seminars (COS)", "Career Orientation Seminars (COS)"))
     activity_rows.append(("Non-Teaching SC", "Guidance/Counseling", "Guidance/Counseling"))
     
-    # Section C: Non-Teaching HQ
+    # Section D: Non-Teaching HQ
     activity_rows.append(("Non-Teaching HQ", "Consultation", "Consultation"))
     activity_rows.append(("Non-Teaching HQ", "Administrative Hours", "Administrative Hours"))
     
@@ -431,11 +426,24 @@ def create_timesheet_sheet(wb, sheet_title, instructor, class_loads, year, month
             val = timesheet_data.get((key_name, date_str))
             
             if val is None:
-                # If no override, auto-populate teaching activities
-                # We find class meeting weekday and match it
-                if cat == "Teaching Activities":
+                # If no override, auto-populate regular / excess / consultation
+                if cat == "Regular Load":
                     val = 0.0
-                    for _, cl in teaching_classes.iterrows():
+                    for _, cl in regular_classes.iterrows():
+                        cl_key = f"{cl['type']}: {cl['subject_name']} ({cl['section_code']})"
+                        if cl_key == key_name and cl['day_of_week'] == d_info['day_abbr']:
+                            val = cl['hours']
+                            break
+                elif cat == "Excess Load":
+                    val = 0.0
+                    for _, cl in excess_classes.iterrows():
+                        cl_key = f"{cl['type']}: {cl['subject_name']} ({cl['section_code']})"
+                        if cl_key == key_name and cl['day_of_week'] == d_info['day_abbr']:
+                            val = cl['hours']
+                            break
+                elif cat == "Teaching Activities": # Fallback for backwards compatibility
+                    val = 0.0
+                    for _, cl in pd.concat([regular_classes, excess_classes]).iterrows():
                         cl_key = f"{cl['type']}: {cl['subject_name']} ({cl['section_code']})"
                         if cl_key == key_name and cl['day_of_week'] == d_info['day_abbr']:
                             val = cl['hours']

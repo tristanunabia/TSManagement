@@ -5,6 +5,7 @@ import calendar
 from date_engine import generate_cutoff_dates, get_previous_month
 from database import (
     init_db, get_instructors, add_instructor, update_instructor, delete_instructor,
+    set_instructor_academic_level,
     get_class_loads, add_class_load, delete_class_load,
     get_timesheet_overrides, save_timesheet_overrides, clear_timesheet_overrides
 )
@@ -177,12 +178,13 @@ if instructors_df.empty:
     with st.sidebar.expander("➕ Add First Instructor", expanded=True):
         new_name = st.text_input("Instructor Name", key="init_name")
         new_status = st.selectbox("Employment Status", ["SC-Based", "Part-Time", "Pro-Rated"], key="init_status")
+        new_level = st.selectbox("Academic Level", ["Tertiary", "SHS"], key="init_level")
         new_dept = st.text_input("Department", "Computer Science", key="init_dept")
         new_email = st.text_input("Email", key="init_email")
         new_phone = st.text_input("Phone", key="init_phone")
         if st.button("Register Instructor", key="init_btn"):
             if new_name:
-                add_instructor(new_name, new_email, new_phone, new_dept, new_status)
+                add_instructor(new_name, new_email, new_phone, new_dept, new_status, new_level)
                 st.rerun()
     st.stop()
 
@@ -191,6 +193,25 @@ instructor_options = {row['name']: row['id'] for _, row in instructors_df.iterro
 selected_inst_name = st.sidebar.selectbox("Select Instructor", list(instructor_options.keys()))
 selected_inst_id = instructor_options[selected_inst_name]
 selected_inst_row = instructors_df[instructors_df['id'] == selected_inst_id].iloc[0]
+
+# Academic Level Selection (Tertiary: 24 units max, SHS: 30 units max)
+current_level = selected_inst_row.get("academic_level", "Tertiary")
+if pd.isna(current_level) or not current_level:
+    current_level = "Tertiary"
+
+selected_level = st.sidebar.radio(
+    "Academic Teaching Level",
+    ["Tertiary", "SHS"],
+    index=0 if current_level == "Tertiary" else 1,
+    horizontal=True,
+    help="Select teaching level. Tertiary max regular load: 24 units. SHS max regular load: 30 units."
+)
+
+if selected_level != current_level:
+    set_instructor_academic_level(selected_inst_id, selected_level)
+    st.rerun()
+
+max_reg_units = 30.0 if selected_level == "SHS" else 24.0
 
 # Month and Year selection
 current_year = datetime.datetime.now().year
@@ -208,12 +229,13 @@ with st.sidebar.expander("👤 Instructor Profiles Manager", expanded=False):
     st.subheader("Add New Instructor")
     add_name = st.text_input("Name", key="add_name")
     add_status = st.selectbox("Status", ["SC-Based", "Part-Time", "Pro-Rated"], key="add_status")
+    add_level = st.selectbox("Academic Level", ["Tertiary", "SHS"], key="add_level")
     add_dept = st.text_input("Department", key="add_dept")
     add_email = st.text_input("Email", key="add_email")
     add_phone = st.text_input("Phone", key="add_phone")
     if st.button("Save New Profile"):
         if add_name:
-            add_instructor(add_name, add_email, add_phone, add_dept, add_status)
+            add_instructor(add_name, add_email, add_phone, add_dept, add_status, add_level)
             st.success(f"Added {add_name}")
             st.rerun()
             
@@ -221,13 +243,14 @@ with st.sidebar.expander("👤 Instructor Profiles Manager", expanded=False):
     st.subheader("Edit Current Instructor")
     edit_name = st.text_input("Edit Name", value=selected_inst_row["name"])
     edit_status = st.selectbox("Edit Status", ["SC-Based", "Part-Time", "Pro-Rated"], index=["SC-Based", "Part-Time", "Pro-Rated"].index(selected_inst_row["employment_status"]))
+    edit_level = st.selectbox("Edit Academic Level", ["Tertiary", "SHS"], index=0 if current_level == "Tertiary" else 1)
     edit_dept = st.text_input("Edit Department", value=selected_inst_row.get("department", ""))
     edit_email = st.text_input("Edit Email", value=selected_inst_row.get("email", ""))
     edit_phone = st.text_input("Edit Phone", value=selected_inst_row.get("phone", ""))
     col_edit_1, col_edit_2 = st.columns(2)
     with col_edit_1:
         if st.button("Update Profile"):
-            update_instructor(selected_inst_id, edit_name, edit_email, edit_phone, edit_dept, edit_status)
+            update_instructor(selected_inst_id, edit_name, edit_email, edit_phone, edit_dept, edit_status, edit_level)
             st.success("Profile Updated!")
             st.rerun()
     with col_edit_2:
@@ -242,7 +265,12 @@ with st.sidebar.expander("👤 Instructor Profiles Manager", expanded=False):
 # ----------------- MAIN VIEW -----------------
 
 st.title("Academic Instructor Timesheet & Schedule Management System")
-st.markdown(f"**Current Instructor:** `{selected_inst_row['name']}` | **Status:** `{selected_inst_row['employment_status']}` | **Department:** `{selected_inst_row.get('department', 'N/A')}`")
+st.markdown(
+    f"**Current Instructor:** `{selected_inst_row['name']}` | "
+    f"**Status:** `{selected_inst_row['employment_status']}` | "
+    f"**Level:** `{selected_level}` (Max Regular: **{max_reg_units:.0f} units**) | "
+    f"**Department:** `{selected_inst_row.get('department', 'N/A')}`"
+)
 
 # Create main tabs
 tab_timesheet, tab_class_load, tab_schedule = st.tabs([
@@ -262,16 +290,22 @@ with tab_timesheet:
     cutoff_dates = generate_cutoff_dates(selected_year, selected_month, selected_cutoff)
     date_columns = [f"{d['day_num']} ({d['day_abbr']})" for d in cutoff_dates]
     
-    # Create the standard rows for the timesheet
-    teaching_classes = class_loads_df[class_loads_df["load_category"].isin(["Regular Load", "Excess/Overload"])]
+    # Create the standard rows for the timesheet (Separate Regular Load and Excess Load)
+    regular_classes = class_loads_df[class_loads_df["load_category"] == "Regular Load"]
+    excess_classes = class_loads_df[class_loads_df["load_category"].isin(["Excess Load", "Excess/Overload"])]
     activity_rows = []
     
-    # Section A
-    for _, cl in teaching_classes.iterrows():
+    # Section A: Regular Load
+    for _, cl in regular_classes.iterrows():
         key_name = f"{cl['type']}: {cl['subject_name']} ({cl['section_code']})"
-        activity_rows.append(("Teaching Activities", key_name))
+        activity_rows.append(("Regular Load", key_name))
         
-    # Section B & C
+    # Section B: Excess Load
+    for _, cl in excess_classes.iterrows():
+        key_name = f"{cl['type']}: {cl['subject_name']} ({cl['section_code']})"
+        activity_rows.append(("Excess Load", key_name))
+        
+    # Section C & D: Non-Teaching
     activity_rows.append(("Non-Teaching SC", "Career Orientation Seminars (COS)"))
     activity_rows.append(("Non-Teaching SC", "Guidance/Counseling"))
     activity_rows.append(("Non-Teaching HQ", "Consultation"))
@@ -292,9 +326,16 @@ with tab_timesheet:
             
             if val is None:
                 # 2. No override, calculate scheduled default
-                if cat == "Teaching Activities":
+                if cat == "Regular Load":
                     val = 0.0
-                    for _, cl in teaching_classes.iterrows():
+                    for _, cl in regular_classes.iterrows():
+                        cl_key = f"{cl['type']}: {cl['subject_name']} ({cl['section_code']})"
+                        if cl_key == key_name and cl['day_of_week'] == d['day_abbr']:
+                            val = cl['hours']
+                            break
+                elif cat == "Excess Load":
+                    val = 0.0
+                    for _, cl in excess_classes.iterrows():
                         cl_key = f"{cl['type']}: {cl['subject_name']} ({cl['section_code']})"
                         if cl_key == key_name and cl['day_of_week'] == d['day_abbr']:
                             val = cl['hours']
@@ -392,38 +433,51 @@ with tab_timesheet:
     # Real-Time Computation Dashboard
     st.subheader("Real-Time Computation Dashboard")
     
-    col_dash_1, col_dash_2, col_dash_3 = st.columns(3)
+    # Calculate separate regular and excess load hours
+    reg_keys = [f"{cl['type']}: {cl['subject_name']} ({cl['section_code']})" for _, cl in regular_classes.iterrows()]
+    excess_keys = [f"{cl['type']}: {cl['subject_name']} ({cl['section_code']})" for _, cl in excess_classes.iterrows()]
+    reg_hours = sum(row_totals[k] for k in reg_keys if k in row_totals)
+    excess_hours = sum(row_totals[k] for k in excess_keys if k in row_totals)
+    
+    col_dash_1, col_dash_2, col_dash_3, col_dash_4 = st.columns(4)
     
     with col_dash_1:
         st.markdown(f"""
         <div class="metric-card">
             <div class="metric-title">Grand Total Hours</div>
             <div class="metric-val">{grand_total:.2f} hrs</div>
-            <p style='margin:0;font-size:0.8rem;color:#64748b;'>Sum of all hours in selected period</p>
+            <p style='margin:0;font-size:0.8rem;color:#64748b;'>All hours in cutoff period</p>
         </div>
         """, unsafe_allow_html=True)
         
     with col_dash_2:
-        # standard standard is 80 hours per period
-        target = 80.0
-        pct = min(100.0, (grand_total / target) * 100)
         st.markdown(f"""
         <div class="metric-card">
-            <div class="metric-title">Target Load Progress</div>
-            <div class="metric-val">{pct:.1f}%</div>
-            <p style='margin:0;font-size:0.8rem;color:#64748b;'>Standard target period: 80.00 hrs</p>
+            <div class="metric-title">Regular Load Hours</div>
+            <div class="metric-val" style="color: #15803d;">{reg_hours:.2f} hrs</div>
+            <p style='margin:0;font-size:0.8rem;color:#64748b;'>Regular teaching courses</p>
         </div>
         """, unsafe_allow_html=True)
         
     with col_dash_3:
-        status_pass = grand_total >= 80.0
-        status_text = "PASSED (80h+ Standard)" if status_pass else "UNDER-HOURS"
-        status_class = "metric-status-pass" if status_pass else "metric-status-warn"
         st.markdown(f"""
         <div class="metric-card">
-            <div class="metric-title">Validation Status</div>
+            <div class="metric-title">Excess Load Hours</div>
+            <div class="metric-val" style="color: #b45309;">{excess_hours:.2f} hrs</div>
+            <p style='margin:0;font-size:0.8rem;color:#64748b;'>Overload teaching courses</p>
+        </div>
+        """, unsafe_allow_html=True)
+        
+    with col_dash_4:
+        status_pass = grand_total >= 80.0
+        status_text = "PASSED (80h+)" if status_pass else "UNDER-HOURS"
+        status_class = "metric-status-pass" if status_pass else "metric-status-warn"
+        pct = min(100.0, (grand_total / 80.0) * 100)
+        st.markdown(f"""
+        <div class="metric-card">
+            <div class="metric-title">Validation ({pct:.0f}%)</div>
             <div class="metric-val {status_class}">{status_text}</div>
-            <p style='margin:0;font-size:0.8rem;color:#64748b;'>Target standard verification</p>
+            <p style='margin:0;font-size:0.8rem;color:#64748b;'>Target: 80.00 hrs period</p>
         </div>
         """, unsafe_allow_html=True)
         
@@ -433,8 +487,9 @@ with tab_timesheet:
     with col_tbl_1:
         st.subheader("Summary per Activity")
         summary_rows = []
-        for act in row_totals.index:
-            summary_rows.append({"Activity": act, "Total Hours": f"{row_totals[act]:.1f} hrs"})
+        for cat, key_name in activity_rows:
+            if key_name in row_totals:
+                summary_rows.append({"Category": cat, "Activity": key_name, "Total Hours": f"{row_totals[key_name]:.1f} hrs"})
         st.table(pd.DataFrame(summary_rows))
         
     with col_tbl_2:
@@ -446,52 +501,129 @@ with tab_timesheet:
 
 # ----------------- TAB 2: CLASS LOAD DIRECTORY -----------------
 with tab_class_load:
-    st.header(f"Class Load Directory (1st24) for {selected_inst_name}")
+    st.header(f"Class Load Directory for {selected_inst_name} ({selected_level})")
+    
+    # Calculate summary metrics
+    reg_df = class_loads_df[class_loads_df["load_category"] == "Regular Load"]
+    excess_df = class_loads_df[class_loads_df["load_category"].isin(["Excess Load", "Excess/Overload"])]
+    consult_df = class_loads_df[class_loads_df["load_category"] == "Consultation"]
+    
+    reg_units = reg_df["units"].sum() if not reg_df.empty else 0.0
+    excess_units = excess_df["units"].sum() if not excess_df.empty else 0.0
+    total_units = reg_units + excess_units
+    comb_hours = class_loads_df["hours"].sum() if not class_loads_df.empty else 0.0
+    
+    # Display Metrics Panel
+    col_m1, col_m2, col_m3, col_m4 = st.columns(4)
+    with col_m1:
+        st.metric(
+            "Regular Load Units",
+            f"{reg_units:.1f} / {max_reg_units:.0f} u",
+            delta=f"{selected_level} Limit: {max_reg_units:.0f} max",
+            delta_color="normal"
+        )
+    with col_m2:
+        st.metric("Excess Load Units", f"{excess_units:.1f} Units")
+    with col_m3:
+        st.metric("Total Load Units", f"{total_units:.1f} Units")
+    with col_m4:
+        st.metric("Combined Weekly Hours", f"{comb_hours:.2f} hrs")
+        
+    # Cap validation alert
+    if reg_units > max_reg_units:
+        st.error(
+            f"⚠️ **Regular Load Limit Exceeded!** Regular load is currently **{reg_units:.1f} units**, "
+            f"exceeding the maximum allowed **{max_reg_units:.0f} units** for **{selected_level}** instructors. "
+            f"Please change excess course(s) to **Excess Load**."
+        )
+    elif reg_units == max_reg_units:
+        st.info(f"ℹ️ Regular load is exactly at the **{max_reg_units:.0f} units** maximum limit for **{selected_level}**.")
+    else:
+        st.success(
+            f"✅ Regular load is within limits: **{reg_units:.1f} units** used of **{max_reg_units:.0f} max** for **{selected_level}** "
+            f"({max_reg_units - reg_units:.1f} units available for Regular Load)."
+        )
+        
+    st.markdown("---")
     
     if class_loads_df.empty:
         st.info("No class load schedules currently registered for this instructor.")
     else:
-        # Calculate summary metrics
-        reg_units = class_loads_df[class_loads_df["load_category"] == "Regular Load"]["units"].sum()
-        overload_units = class_loads_df[class_loads_df["load_category"] == "Excess/Overload"]["units"].sum()
-        comb_hours = class_loads_df["hours"].sum()
+        # Separate Section 1: Regular Load
+        st.subheader(f"📘 Regular Load Courses ({len(reg_df)} classes • {reg_units:.1f} Units)")
+        if reg_df.empty:
+            st.caption("No Regular Load courses assigned.")
+        else:
+            for _, row in reg_df.iterrows():
+                with st.container():
+                    col_d1, col_d2, col_d3, col_d4 = st.columns([3, 2, 2, 1])
+                    with col_d1:
+                        st.markdown(f"**{row['subject_name']}** (`{row['type']}`)")
+                        st.markdown(f"Code: `{row['section_code']}` | Room: `{row['room']}`")
+                    with col_d2:
+                        st.markdown(f"📅 **Day:** `{row['day_of_week']}`")
+                        st.markdown(f"🕒 **Time:** `{row['start_time']} - {row['end_time']}`")
+                    with col_d3:
+                        st.markdown(f"Units: **{row['units']:.1f} u**")
+                        st.markdown(f"Duration: `{row['hours']:.1f} hrs`")
+                    with col_d4:
+                        if st.button("❌ Remove", key=f"del_reg_{row['id']}"):
+                            delete_class_load(row['id'])
+                            clear_timesheet_overrides(selected_inst_id, selected_year, selected_month, selected_cutoff)
+                            st.success("Entry removed!")
+                            st.rerun()
+                    st.markdown("<hr style='margin: 8px 0; border: none; border-top: 1px dashed #e2e8f0;'>", unsafe_allow_html=True)
+                    
+        st.markdown("<br>", unsafe_allow_html=True)
         
-        # Display Metrics Panel
-        col_m1, col_m2, col_m3 = st.columns(3)
-        with col_m1:
-            st.metric("Total Regular Units", f"{reg_units:.1f} Units")
-        with col_m2:
-            st.metric("Total Overload Units", f"{overload_units:.1f} Units")
-        with col_m3:
-            st.metric("Combined Weekly Hours", f"{comb_hours:.2f} hrs")
-            
-        # Display table with delete buttons
-        st.subheader("Scheduled Course Lists")
-        
-        for _, row in class_loads_df.iterrows():
-            with st.container():
-                col_d1, col_d2, col_d3, col_d4, col_d5 = st.columns([2, 2, 2, 2, 1])
-                with col_d1:
-                    st.markdown(f"**{row['subject_name']}** ({row['type']})")
-                    st.markdown(f"Code: `{row['section_code']}` | Room: `{row['room']}`")
-                with col_d2:
-                    st.markdown(f"📅 **Day:** `{row['day_of_week']}`")
-                    st.markdown(f"🕒 **Time:** `{row['start_time']} - {row['end_time']}`")
-                with col_d3:
-                    st.markdown(f"Units: `{row['units']:.1f}`")
-                    st.markdown(f"Duration: `{row['hours']:.1f} hrs`")
-                with col_d4:
-                    st.markdown(f"Category: **{row['load_category']}**")
-                    st.markdown(f"Enrollment: `{row['enrollment']}`")
-                with col_d5:
-                    if st.button("❌ Remove", key=f"del_{row['id']}"):
-                        delete_class_load(row['id'])
-                        # clear overrides to force recalculation of dates
-                        clear_timesheet_overrides(selected_inst_id, selected_year, selected_month, selected_cutoff)
-                        st.success("Entry removed!")
-                        st.rerun()
-                st.markdown("---")
-                
+        # Separate Section 2: Excess Load
+        st.subheader(f"⚡ Excess Load Courses ({len(excess_df)} classes • {excess_units:.1f} Units)")
+        if excess_df.empty:
+            st.caption("No Excess Load courses assigned.")
+        else:
+            for _, row in excess_df.iterrows():
+                with st.container():
+                    col_d1, col_d2, col_d3, col_d4 = st.columns([3, 2, 2, 1])
+                    with col_d1:
+                        st.markdown(f"**{row['subject_name']}** (`{row['type']}`)")
+                        st.markdown(f"Code: `{row['section_code']}` | Room: `{row['room']}`")
+                    with col_d2:
+                        st.markdown(f"📅 **Day:** `{row['day_of_week']}`")
+                        st.markdown(f"🕒 **Time:** `{row['start_time']} - {row['end_time']}`")
+                    with col_d3:
+                        st.markdown(f"Units: **{row['units']:.1f} u**")
+                        st.markdown(f"Duration: `{row['hours']:.1f} hrs`")
+                    with col_d4:
+                        if st.button("❌ Remove", key=f"del_exc_{row['id']}"):
+                            delete_class_load(row['id'])
+                            clear_timesheet_overrides(selected_inst_id, selected_year, selected_month, selected_cutoff)
+                            st.success("Entry removed!")
+                            st.rerun()
+                    st.markdown("<hr style='margin: 8px 0; border: none; border-top: 1px dashed #e2e8f0;'>", unsafe_allow_html=True)
+
+        if not consult_df.empty:
+            st.markdown("<br>", unsafe_allow_html=True)
+            st.subheader(f"🕒 Consultation Hours ({len(consult_df)} sessions)")
+            for _, row in consult_df.iterrows():
+                with st.container():
+                    col_d1, col_d2, col_d3, col_d4 = st.columns([3, 2, 2, 1])
+                    with col_d1:
+                        st.markdown(f"**{row['subject_name']}**")
+                        st.markdown(f"Room: `{row['room']}`")
+                    with col_d2:
+                        st.markdown(f"📅 **Day:** `{row['day_of_week']}`")
+                        st.markdown(f"🕒 **Time:** `{row['start_time']} - {row['end_time']}`")
+                    with col_d3:
+                        st.markdown(f"Duration: `{row['hours']:.1f} hrs`")
+                    with col_d4:
+                        if st.button("❌ Remove", key=f"del_con_{row['id']}"):
+                            delete_class_load(row['id'])
+                            clear_timesheet_overrides(selected_inst_id, selected_year, selected_month, selected_cutoff)
+                            st.success("Entry removed!")
+                            st.rerun()
+                    st.markdown("<hr style='margin: 8px 0; border: none; border-top: 1px dashed #e2e8f0;'>", unsafe_allow_html=True)
+
+    st.markdown("---")
     # Add new load meeting schedule
     with st.expander("➕ Add Class Load Schedule Meeting"):
         add_form_name = st.text_input("Subject Name", placeholder="e.g. Computer Programming 5")
@@ -512,26 +644,28 @@ with tab_class_load:
             duration_dt = datetime.datetime.combine(datetime.date.today(), add_form_end) - datetime.datetime.combine(datetime.date.today(), add_form_start)
             duration_hours = max(0.5, duration_dt.seconds / 3600.0)
             add_form_hours = st.number_input("Actual Meeting Hours", min_value=0.5, max_value=8.0, value=duration_hours, step=0.5)
+            add_form_cat = st.selectbox("Load Category", ["Regular Load", "Excess Load", "Consultation"])
             
-            add_form_cat = st.selectbox("Load Category", ["Regular Load", "Excess/Overload", "Consultation"])
-            add_form_enrol = st.number_input("Course Enrollment Count", min_value=0, max_value=200, value=30)
+        if add_form_cat == "Regular Load" and (reg_units + add_form_units) > max_reg_units:
+            st.warning(
+                f"⚠️ **Limit Notice:** Adding this {add_form_units:.1f}-unit course under Regular Load will exceed the "
+                f"**{max_reg_units:.0f} units max limit** for **{selected_level}** (Total would be {reg_units + add_form_units:.1f} units). "
+                f"Please consider designating this entry as **Excess Load**."
+            )
             
         if st.button("Submit Schedule Entry"):
             if add_form_name and add_form_code and add_form_room:
-                # format start and end
                 st_str = add_form_start.strftime("%H:%M")
                 en_str = add_form_end.strftime("%H:%M")
                 
-                # Check for start/end time validity
                 if add_form_end <= add_form_start:
                     st.error("End Time must be after Start Time.")
                 else:
                     add_class_load(
                         selected_inst_id, add_form_name, add_form_code, add_form_room,
                         add_form_day, st_str, en_str, add_form_type,
-                        add_form_units, add_form_hours, add_form_cat, add_form_enrol
+                        add_form_units, add_form_hours, add_form_cat, 0
                     )
-                    # Clear overrides
                     clear_timesheet_overrides(selected_inst_id, selected_year, selected_month, selected_cutoff)
                     st.success("New Class Load added successfully!")
                     st.rerun()
@@ -549,20 +683,22 @@ with tab_schedule:
         st.subheader("Timetable Details")
         st.markdown(f"**Faculty Name:** {selected_inst_row['name']}")
         st.markdown(f"**Employment Status:** {selected_inst_row['employment_status']}")
+        st.markdown(f"**Academic Level:** `{selected_level}` (Max Reg: **{max_reg_units:.0f}u**)")
         st.markdown(f"**Department:** {selected_inst_row.get('department', 'N/A')}")
         st.markdown(f"**Email:** {selected_inst_row.get('email', 'N/A')}")
         st.markdown(f"**Phone:** {selected_inst_row.get('phone', 'N/A')}")
         
         st.markdown("---")
-        total_sched_units = class_loads_df["units"].sum()
-        total_enrol_students = class_loads_df["enrollment"].sum()
+        total_sched_units = class_loads_df["units"].sum() if not class_loads_df.empty else 0.0
+        reg_sched_units = class_loads_df[class_loads_df["load_category"] == "Regular Load"]["units"].sum() if not class_loads_df.empty else 0.0
+        excess_sched_units = class_loads_df[class_loads_df["load_category"].isin(["Excess Load", "Excess/Overload"])]["units"].sum() if not class_loads_df.empty else 0.0
         
         st.metric("Total Load Units", f"{total_sched_units:.1f} Units")
-        st.metric("Total Student Enrollment", f"{total_enrol_students} Students")
+        st.metric("Regular Load Units", f"{reg_sched_units:.1f} / {max_reg_units:.0f} u")
+        st.metric("Excess Load Units", f"{excess_sched_units:.1f} Units")
         
     with col_grid_1:
         # Timetable generation
-        # Slots list
         slots = []
         t_start = datetime.time(6, 30)
         t_end = datetime.time(21, 0)
@@ -572,12 +708,10 @@ with tab_schedule:
             slots.append(curr.strftime("%H:%M"))
             curr += datetime.timedelta(minutes=15)
             
-        # Map weekday index
         day_cols = ["M", "T", "W", "TH", "F", "S", "SU"]
         day_names = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
         
         # Build 2D grid matrix
-        # Cell formats: None or {'span': int, 'class': dict}
         grid_matrix = [[None for _ in range(7)] for _ in range(len(slots))]
         
         for _, row in class_loads_df.iterrows():
@@ -590,7 +724,6 @@ with tab_schedule:
                 s_str = row["start_time"]
                 e_str = row["end_time"]
                 
-                # Find slot indices
                 s_time = datetime.datetime.strptime(s_str, "%H:%M").time()
                 e_time = datetime.datetime.strptime(e_str, "%H:%M").time()
                 
@@ -606,14 +739,10 @@ with tab_schedule:
                         
                 if start_slot_idx != -1 and end_slot_idx != -1 and start_slot_idx <= end_slot_idx:
                     span = (end_slot_idx - start_slot_idx) + 1
-                    
-                    # Put info in top cell
                     grid_matrix[start_slot_idx][day_idx] = {
                         'span': span,
                         'class': row
                     }
-                    
-                    # Fill the rest with placeholder span=0 to skip rendering
                     for r in range(start_slot_idx + 1, end_slot_idx + 1):
                         grid_matrix[r][day_idx] = {
                             'span': 0,
@@ -641,7 +770,6 @@ with tab_schedule:
                     html += f'<td class="{cell_class}"></td>'
                 elif cell['span'] > 0:
                     cl = cell['class']
-                    # Theme based on load category and type
                     cat = cl["load_category"]
                     t_type = cl["type"]
                     theme = "class-lec-theme"
@@ -650,21 +778,22 @@ with tab_schedule:
                     elif t_type == "LAB":
                         theme = "class-lab-theme"
                         
+                    badge_bg = "#dcfce7" if cat == "Regular Load" else ("#fef3c7" if cat in ("Excess Load", "Excess/Overload") else "#f3f4f6")
+                    badge_color = "#166534" if cat == "Regular Load" else ("#92400e" if cat in ("Excess Load", "Excess/Overload") else "#374151")
+                    badge_text = "REGULAR" if cat == "Regular Load" else ("EXCESS" if cat in ("Excess Load", "Excess/Overload") else "CONSULT")
+                    
                     content = f"""
                     <div class="class-block-container {theme}">
                         <div style='font-size:0.75rem;font-weight:700;'>{cl['subject_name']}</div>
                         <div style='font-size:0.65rem;'>Section: {cl['section_code']}</div>
                         <div style='font-size:0.65rem;'>Room: {cl['room']}</div>
-                        <div style='font-size:0.65rem;'>({cl['type']})</div>
+                        <div style='font-size:0.65rem;'>({cl['type']}) <span style='background:{badge_bg}; color:{badge_color}; font-size:0.55rem; padding:1px 3px; border-radius:3px; font-weight:700;'>{badge_text}</span></div>
                     </div>
                     """
                     html += f'<td rowspan="{cell["span"]}" class="{cell_class}" style="padding: 2px;">{content}</td>'
                 elif cell['span'] == 0:
-                    # Skipped because of rowspan
                     pass
             html += '</tr>'
             
         html += '</tbody></table></div>'
-        
-        # Display schedule HTML
         st.markdown(html, unsafe_allow_html=True)
