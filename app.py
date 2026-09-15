@@ -163,6 +163,42 @@ st.markdown("""
     .weekend-cell-theme {
         background-color: #f1f5f9 !important;
     }
+    
+    /* Timesheet Section Banners */
+    .section-banner {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        padding: 10px 16px;
+        border-radius: 8px;
+        margin-top: 14px;
+        margin-bottom: 8px;
+        font-weight: 700;
+        font-size: 0.95rem;
+    }
+    .section-banner-reg {
+        background: linear-gradient(90deg, rgba(30, 58, 138, 0.15) 0%, rgba(30, 58, 138, 0.05) 100%);
+        border-left: 5px solid #1e3a8a;
+        color: #1e3a8a;
+    }
+    .section-banner-exc {
+        background: linear-gradient(90deg, rgba(217, 119, 6, 0.15) 0%, rgba(217, 119, 6, 0.05) 100%);
+        border-left: 5px solid #d97706;
+        color: #b45309;
+    }
+    .section-banner-non {
+        background: linear-gradient(90deg, rgba(79, 70, 229, 0.15) 0%, rgba(79, 70, 229, 0.05) 100%);
+        border-left: 5px solid #4f46e5;
+        color: #4338ca;
+    }
+    .section-tag {
+        font-size: 0.75rem;
+        padding: 3px 8px;
+        border-radius: 12px;
+        font-weight: 600;
+        background: rgba(255, 255, 255, 0.85);
+        box-shadow: 0 1px 2px rgba(0,0,0,0.06);
+    }
 </style>
 """, unsafe_allow_html=True)
 
@@ -290,110 +326,160 @@ with tab_timesheet:
     cutoff_dates = generate_cutoff_dates(selected_year, selected_month, selected_cutoff)
     date_columns = [f"{d['day_num']} ({d['day_abbr']})" for d in cutoff_dates]
     
-    # Create the standard rows for the timesheet (Separate Regular Load and Excess Load)
+    # Classes groups
     regular_classes = class_loads_df[class_loads_df["load_category"] == "Regular Load"]
     excess_classes = class_loads_df[class_loads_df["load_category"].isin(["Excess Load", "Excess/Overload"])]
-    activity_rows = []
-    
-    # Section A: Regular Load
-    for _, cl in regular_classes.iterrows():
-        key_name = f"{cl['type']}: {cl['subject_name']} ({cl['section_code']})"
-        activity_rows.append(("Regular Load", key_name))
-        
-    # Section B: Excess Load
-    for _, cl in excess_classes.iterrows():
-        key_name = f"{cl['type']}: {cl['subject_name']} ({cl['section_code']})"
-        activity_rows.append(("Excess Load", key_name))
-        
-    # Section C & D: Non-Teaching
-    activity_rows.append(("Non-Teaching SC", "Career Orientation Seminars (COS)"))
-    activity_rows.append(("Non-Teaching SC", "Guidance/Counseling"))
-    activity_rows.append(("Non-Teaching HQ", "Consultation"))
-    activity_rows.append(("Non-Teaching HQ", "Administrative Hours"))
+    consultations = class_loads_df[class_loads_df["load_category"] == "Consultation"]
     
     # Load overrides from SQLite
     db_overrides = get_timesheet_overrides(selected_inst_id, selected_year, selected_month, selected_cutoff)
     
-    # Build initial timesheet grid data
-    grid_data = {}
-    for cat, key_name in activity_rows:
+    # Column configuration for editable grids
+    col_config = {
+        col: st.column_config.NumberColumn(
+            min_value=0.0,
+            max_value=24.0,
+            step=0.5,
+            format="%.1f"
+        ) for col in date_columns
+    }
+    
+    st.markdown("⚠️ *Adjust hours inside the cell grid below. Subtotals and validation compute in real-time. Make sure to click **Save Timesheet Changes** to persist overrides.*")
+    
+    # ---------------- 1. REGULAR LOAD TABLE ----------------
+    reg_grid_data = {}
+    for _, cl in regular_classes.iterrows():
+        key_name = f"{cl['type']}: {cl['subject_name']} ({cl['section_code']})"
         row_values = []
         for d in cutoff_dates:
             date_str = d['date'].strftime("%Y-%m-%d")
-            
-            # 1. Check if there is a manual override saved
             val = db_overrides.get((key_name, date_str))
-            
             if val is None:
-                # 2. No override, calculate scheduled default
-                if cat == "Regular Load":
+                val = cl['hours'] if cl['day_of_week'] == d['day_abbr'] else 0.0
+            row_values.append(val)
+        reg_grid_data[key_name] = row_values
+        
+    reg_timesheet_df = pd.DataFrame.from_dict(reg_grid_data, orient='index', columns=date_columns) if reg_grid_data else pd.DataFrame(columns=date_columns)
+    reg_timesheet_df.index.name = "Course / Subject"
+    
+    st.markdown(f"""
+    <div class="section-banner section-banner-reg">
+        <span>📘 1. Regular Load Timesheet</span>
+        <span class="section-tag" style="color: #1e3a8a;">Cap: {max_reg_units:.0f} Units ({selected_level}) • {len(regular_classes)} Course(s)</span>
+    </div>
+    """, unsafe_allow_html=True)
+    
+    if not reg_timesheet_df.empty:
+        edited_reg_df = st.data_editor(
+            reg_timesheet_df,
+            use_container_width=True,
+            column_config=col_config,
+            key=f"editor_reg_{selected_inst_id}_{selected_year}_{selected_month}_{selected_cutoff}"
+        )
+    else:
+        st.info("ℹ️ No Regular Load courses registered for this instructor.")
+        edited_reg_df = pd.DataFrame(columns=date_columns)
+        
+    # ---------------- 2. EXCESS LOAD TABLE ----------------
+    exc_grid_data = {}
+    for _, cl in excess_classes.iterrows():
+        key_name = f"{cl['type']}: {cl['subject_name']} ({cl['section_code']})"
+        row_values = []
+        for d in cutoff_dates:
+            date_str = d['date'].strftime("%Y-%m-%d")
+            val = db_overrides.get((key_name, date_str))
+            if val is None:
+                val = cl['hours'] if cl['day_of_week'] == d['day_abbr'] else 0.0
+            row_values.append(val)
+        exc_grid_data[key_name] = row_values
+        
+    exc_timesheet_df = pd.DataFrame.from_dict(exc_grid_data, orient='index', columns=date_columns) if exc_grid_data else pd.DataFrame(columns=date_columns)
+    exc_timesheet_df.index.name = "Course / Subject"
+    
+    st.markdown(f"""
+    <div class="section-banner section-banner-exc">
+        <span>⚡ 2. Excess Load Timesheet</span>
+        <span class="section-tag" style="color: #b45309;">Overload / Additional Teaching • {len(excess_classes)} Course(s)</span>
+    </div>
+    """, unsafe_allow_html=True)
+    
+    if not exc_timesheet_df.empty:
+        edited_exc_df = st.data_editor(
+            exc_timesheet_df,
+            use_container_width=True,
+            column_config=col_config,
+            key=f"editor_exc_{selected_inst_id}_{selected_year}_{selected_month}_{selected_cutoff}"
+        )
+    else:
+        st.info("ℹ️ No Excess Load courses registered for this instructor.")
+        edited_exc_df = pd.DataFrame(columns=date_columns)
+        
+    # ---------------- 3. NON-TEACHING SC / HQ TABLE ----------------
+    non_teaching_rows = [
+        ("Non-Teaching SC", "Career Orientation Seminars (COS)"),
+        ("Non-Teaching SC", "Guidance/Counseling"),
+        ("Non-Teaching HQ", "Consultation"),
+        ("Non-Teaching HQ", "Administrative Hours")
+    ]
+    non_grid_data = {}
+    for cat, key_name in non_teaching_rows:
+        row_values = []
+        for d in cutoff_dates:
+            date_str = d['date'].strftime("%Y-%m-%d")
+            val = db_overrides.get((key_name, date_str))
+            if val is None:
+                if key_name == "Consultation":
                     val = 0.0
-                    for _, cl in regular_classes.iterrows():
-                        cl_key = f"{cl['type']}: {cl['subject_name']} ({cl['section_code']})"
-                        if cl_key == key_name and cl['day_of_week'] == d['day_abbr']:
-                            val = cl['hours']
-                            break
-                elif cat == "Excess Load":
-                    val = 0.0
-                    for _, cl in excess_classes.iterrows():
-                        cl_key = f"{cl['type']}: {cl['subject_name']} ({cl['section_code']})"
-                        if cl_key == key_name and cl['day_of_week'] == d['day_abbr']:
-                            val = cl['hours']
-                            break
-                elif key_name == "Consultation":
-                    val = 0.0
-                    consultations = class_loads_df[class_loads_df["load_category"] == "Consultation"]
                     for _, cl in consultations.iterrows():
                         if cl['day_of_week'] == d['day_abbr']:
                             val = cl['hours']
                             break
                 else:
                     val = 0.0
-            
             row_values.append(val)
-        grid_data[key_name] = row_values
+        non_grid_data[key_name] = row_values
         
-    # Create DataFrame for st.data_editor
-    timesheet_df = pd.DataFrame.from_dict(grid_data, orient='index', columns=date_columns)
+    non_timesheet_df = pd.DataFrame.from_dict(non_grid_data, orient='index', columns=date_columns)
+    non_timesheet_df.index.name = "Activity Description"
     
-    st.markdown("⚠️ *Adjust hours inside the cell grid. Changes will compute in real-time below. Make sure to click **Save Timesheet Changes** to persist overrides.*")
+    st.markdown("""
+    <div class="section-banner section-banner-non">
+        <span>🏢 3. Non-Teaching Activities (SC & HQ)</span>
+        <span class="section-tag" style="color: #4338ca;">Student Consultation, Guidance, Seminars & Admin</span>
+    </div>
+    """, unsafe_allow_html=True)
     
-    # Render Data Editor
-    edited_df = st.data_editor(
-        timesheet_df,
+    edited_non_df = st.data_editor(
+        non_timesheet_df,
         use_container_width=True,
-        column_config={
-            col: st.column_config.NumberColumn(
-                min_value=0.0,
-                max_value=24.0,
-                step=0.5,
-                format="%.1f"
-            ) for col in date_columns
-        }
+        column_config=col_config,
+        key=f"editor_non_{selected_inst_id}_{selected_year}_{selected_month}_{selected_cutoff}"
     )
     
-    # Compute totals in real-time
-    row_totals = edited_df.sum(axis=1)
-    daily_totals = edited_df.sum(axis=0)
-    grand_total = edited_df.sum().sum()
+    # Compute subtotals and grand totals in real-time
+    reg_hours = float(edited_reg_df.sum().sum()) if not edited_reg_df.empty else 0.0
+    exc_hours = float(edited_exc_df.sum().sum()) if not edited_exc_df.empty else 0.0
+    non_hours = float(edited_non_df.sum().sum()) if not edited_non_df.empty else 0.0
+    grand_total = reg_hours + exc_hours + non_hours
     
     # Save/Reset controls
+    st.markdown("<div style='margin-top: 15px;'></div>", unsafe_allow_html=True)
     col_ctrl_1, col_ctrl_2, col_ctrl_3, col_ctrl_4 = st.columns(4)
     with col_ctrl_1:
         if st.button("💾 Save Timesheet Changes", use_container_width=True):
-            # Parse edits back to SQLite format
+            # Parse edits from all 3 tables back to SQLite format
             overrides_list = []
-            for act_name in edited_df.index:
-                for idx, d_info in enumerate(cutoff_dates):
-                    col_name = date_columns[idx]
-                    hours_val = float(edited_df.loc[act_name, col_name])
-                    
-                    # Store as overrides
-                    overrides_list.append({
-                        'row_name': act_name,
-                        'date_str': d_info['date'].strftime("%Y-%m-%d"),
-                        'hours': hours_val
-                    })
+            for df_to_save in [edited_reg_df, edited_exc_df, edited_non_df]:
+                if not df_to_save.empty:
+                    for act_name in df_to_save.index:
+                        for idx, d_info in enumerate(cutoff_dates):
+                            col_name = date_columns[idx]
+                            hours_val = float(df_to_save.loc[act_name, col_name])
+                            overrides_list.append({
+                                'row_name': act_name,
+                                'date_str': d_info['date'].strftime("%Y-%m-%d"),
+                                'hours': hours_val
+                            })
             save_timesheet_overrides(selected_inst_id, selected_year, selected_month, selected_cutoff, overrides_list)
             st.success("Timesheet overrides successfully saved to SQLite!")
             st.rerun()
@@ -433,12 +519,6 @@ with tab_timesheet:
     # Real-Time Computation Dashboard
     st.subheader("Real-Time Computation Dashboard")
     
-    # Calculate separate regular and excess load hours
-    reg_keys = [f"{cl['type']}: {cl['subject_name']} ({cl['section_code']})" for _, cl in regular_classes.iterrows()]
-    excess_keys = [f"{cl['type']}: {cl['subject_name']} ({cl['section_code']})" for _, cl in excess_classes.iterrows()]
-    reg_hours = sum(row_totals[k] for k in reg_keys if k in row_totals)
-    excess_hours = sum(row_totals[k] for k in excess_keys if k in row_totals)
-    
     col_dash_1, col_dash_2, col_dash_3, col_dash_4 = st.columns(4)
     
     with col_dash_1:
@@ -463,7 +543,7 @@ with tab_timesheet:
         st.markdown(f"""
         <div class="metric-card">
             <div class="metric-title">Excess Load Hours</div>
-            <div class="metric-val" style="color: #b45309;">{excess_hours:.2f} hrs</div>
+            <div class="metric-val" style="color: #b45309;">{exc_hours:.2f} hrs</div>
             <p style='margin:0;font-size:0.8rem;color:#64748b;'>Overload teaching courses</p>
         </div>
         """, unsafe_allow_html=True)
@@ -475,9 +555,9 @@ with tab_timesheet:
         pct = min(100.0, (grand_total / 80.0) * 100)
         st.markdown(f"""
         <div class="metric-card">
-            <div class="metric-title">Validation ({pct:.0f}%)</div>
+            <div class="metric-title">Non-Teaching Hours: {non_hours:.1f}h</div>
             <div class="metric-val {status_class}">{status_text}</div>
-            <p style='margin:0;font-size:0.8rem;color:#64748b;'>Target: 80.00 hrs period</p>
+            <p style='margin:0;font-size:0.8rem;color:#64748b;'>Progress: {pct:.0f}% of 80h standard</p>
         </div>
         """, unsafe_allow_html=True)
         
@@ -487,14 +567,25 @@ with tab_timesheet:
     with col_tbl_1:
         st.subheader("Summary per Activity")
         summary_rows = []
-        for cat, key_name in activity_rows:
-            if key_name in row_totals:
-                summary_rows.append({"Category": cat, "Activity": key_name, "Total Hours": f"{row_totals[key_name]:.1f} hrs"})
-        st.table(pd.DataFrame(summary_rows))
+        if not edited_reg_df.empty:
+            for act in edited_reg_df.index:
+                summary_rows.append({"Category": "Regular Load", "Activity": act, "Total Hours": f"{edited_reg_df.loc[act].sum():.1f} hrs"})
+        if not edited_exc_df.empty:
+            for act in edited_exc_df.index:
+                summary_rows.append({"Category": "Excess Load", "Activity": act, "Total Hours": f"{edited_exc_df.loc[act].sum():.1f} hrs"})
+        if not edited_non_df.empty:
+            for act in edited_non_df.index:
+                cat_tag = "Non-Teaching HQ" if act in ("Consultation", "Administrative Hours") else "Non-Teaching SC"
+                summary_rows.append({"Category": cat_tag, "Activity": act, "Total Hours": f"{edited_non_df.loc[act].sum():.1f} hrs"})
+        st.table(pd.DataFrame(summary_rows) if summary_rows else pd.DataFrame(columns=["Category", "Activity", "Total Hours"]))
         
     with col_tbl_2:
         st.subheader("Summary per Date Column")
         # Format daily totals into a neat grid
+        daily_totals = pd.Series(0.0, index=date_columns)
+        for df_item in [edited_reg_df, edited_exc_df, edited_non_df]:
+            if not df_item.empty:
+                daily_totals = daily_totals.add(df_item.sum(axis=0), fill_value=0.0)
         daily_summary_df = pd.DataFrame(daily_totals).T
         daily_summary_df.index = ["Daily Total"]
         st.dataframe(daily_summary_df, use_container_width=True)

@@ -4,17 +4,22 @@ from openpyxl.utils import get_column_letter
 import io
 import datetime
 import calendar
+import pandas as pd
 from date_engine import generate_cutoff_dates, get_previous_month
 
 # Color constants
-PRIMARY_COLOR = "1F4E78"    # Navy
-SECONDARY_COLOR = "D9E1F2"  # Ice Blue
-WEEKEND_COLOR = "F2F2F2"    # Light Grey
-TEXT_LIGHT = "FFFFFF"       # White
-BORDER_COLOR = "D9D9D9"     # Thin Grey
-ACCENT_GREEN = "E2EFDA"     # Soft Green (LEC)
-ACCENT_BLUE = "DDEBF7"      # Soft Blue (LAB)
-ACCENT_ORANGE = "FFF2CC"    # Soft Orange (Consultation)
+PRIMARY_COLOR = "1F4E78"        # Navy
+SECONDARY_COLOR = "D9E1F2"      # Ice Blue
+WEEKEND_COLOR = "F2F2F2"        # Light Grey
+TEXT_LIGHT = "FFFFFF"           # White
+BORDER_COLOR = "D9D9D9"         # Thin Grey
+ACCENT_GREEN = "E2EFDA"         # Soft Green (LEC)
+ACCENT_BLUE = "DDEBF7"          # Soft Blue (LAB)
+ACCENT_ORANGE = "FFF2CC"        # Soft Orange (Consultation)
+EXCESS_HEADER_COLOR = "C65911"  # Amber/Orange (Excess Load)
+EXCESS_SUB_COLOR = "FCE4D6"     # Peach (Excess Subtotal)
+NON_TEACH_COLOR = "2E4053"      # Slate Navy (Non-Teaching)
+GRAND_TOTAL_COLOR = "C6EFCE"    # Soft Green (Grand Total)
 
 def get_thin_border():
     thin = Side(border_style="thin", color=BORDER_COLOR)
@@ -192,113 +197,172 @@ def create_sched_sheet(wb, instructor, class_loads):
 def create_class_load_sheet(wb, class_loads):
     ws = wb.create_sheet(title="Class Load")
     ws.views.sheetView[0].showGridLines = True
+    thin_border = get_thin_border()
     
     # Title Banner
     ws.merge_cells("A1:J1")
-    ws["A1"] = "CLASS LOAD DIRECTORY (1st24)"
+    ws["A1"] = "FACULTY CLASS LOAD & TEACHING DIRECTORY"
     ws["A1"].font = Font(name="Calibri", size=15, bold=True, color=TEXT_LIGHT)
     ws["A1"].fill = PatternFill(start_color=PRIMARY_COLOR, end_color=PRIMARY_COLOR, fill_type="solid")
     ws["A1"].alignment = Alignment(horizontal="center", vertical="center")
     ws.row_dimensions[1].height = 35
     
-    # Table Headers
     headers = [
         "Subject Name", "Section Code", "Room", "Day", "Start Time", 
         "End Time", "Type", "Units", "Hours", "Load Category"
     ]
-    for c_idx, h in enumerate(headers, start=1):
-        cell = ws.cell(row=3, column=c_idx, value=h)
-        cell.font = Font(bold=True, color=TEXT_LIGHT)
-        cell.fill = PatternFill(start_color=PRIMARY_COLOR, end_color=PRIMARY_COLOR, fill_type="solid")
-        cell.alignment = Alignment(horizontal="center")
-        cell.border = get_thin_border()
-        
-    ws.row_dimensions[3].height = 25
     
-    # Data Rows
-    thin_border = get_thin_border()
-    num_rows = len(class_loads)
-    for r_idx, row in class_loads.iterrows():
-        row_num = r_idx + 4
-        ws.row_dimensions[row_num].height = 20
-        
-        ws.cell(row=row_num, column=1, value=row["subject_name"]).border = thin_border
-        ws.cell(row=row_num, column=2, value=row["section_code"]).border = thin_border
-        ws.cell(row=row_num, column=3, value=row["room"]).border = thin_border
-        
-        day_cell = ws.cell(row=row_num, column=4, value=row["day_of_week"])
-        day_cell.alignment = Alignment(horizontal="center")
-        day_cell.border = thin_border
-        
-        start_cell = ws.cell(row=row_num, column=5, value=row["start_time"])
-        start_cell.alignment = Alignment(horizontal="center")
-        start_cell.border = thin_border
-        
-        end_cell = ws.cell(row=row_num, column=6, value=row["end_time"])
-        end_cell.alignment = Alignment(horizontal="center")
-        end_cell.border = thin_border
-        
-        type_cell = ws.cell(row=row_num, column=7, value=row["type"])
-        type_cell.alignment = Alignment(horizontal="center")
-        type_cell.border = thin_border
-        
-        units_cell = ws.cell(row=row_num, column=8, value=row["units"])
-        units_cell.alignment = Alignment(horizontal="right")
-        units_cell.border = thin_border
-        
-        hours_cell = ws.cell(row=row_num, column=9, value=row["hours"])
-        hours_cell.alignment = Alignment(horizontal="right")
-        hours_cell.border = thin_border
-        
-        cat_cell = ws.cell(row=row_num, column=10, value=row["load_category"])
-        cat_cell.border = thin_border
-        
-    # Totals Row
-    total_row = num_rows + 4
-    ws.row_dimensions[total_row].height = 22
+    regular_classes = class_loads[class_loads["load_category"] == "Regular Load"] if not class_loads.empty else pd.DataFrame()
+    excess_classes = class_loads[class_loads["load_category"].isin(["Excess Load", "Excess/Overload"])] if not class_loads.empty else pd.DataFrame()
+    consultations = class_loads[class_loads["load_category"] == "Consultation"] if not class_loads.empty else pd.DataFrame()
     
-    ws.merge_cells(start_row=total_row, start_column=1, end_row=total_row, end_column=7)
-    tot_label = ws.cell(row=total_row, column=1, value="Total")
-    tot_label.font = Font(bold=True)
-    tot_label.alignment = Alignment(horizontal="right")
+    current_row = 3
     
-    # Border for the merged cell
+    def write_load_section(title, df, banner_color, subtotal_label):
+        nonlocal current_row
+        # Section Header Banner
+        ws.merge_cells(start_row=current_row, start_column=1, end_row=current_row, end_column=10)
+        b_cell = ws.cell(row=current_row, column=1, value=title)
+        b_cell.font = Font(name="Calibri", size=11, bold=True, color=TEXT_LIGHT)
+        b_cell.fill = PatternFill(start_color=banner_color, end_color=banner_color, fill_type="solid")
+        b_cell.alignment = Alignment(horizontal="left", vertical="center")
+        for col in range(1, 11):
+            ws.cell(row=current_row, column=col).border = thin_border
+            ws.cell(row=current_row, column=col).fill = PatternFill(start_color=banner_color, end_color=banner_color, fill_type="solid")
+        ws.row_dimensions[current_row].height = 24
+        current_row += 1
+        
+        # Table Column Headers
+        ws.row_dimensions[current_row].height = 22
+        for c_idx, h in enumerate(headers, start=1):
+            c_cell = ws.cell(row=current_row, column=c_idx, value=h)
+            c_cell.font = Font(bold=True, size=10, color=TEXT_LIGHT)
+            c_cell.fill = PatternFill(start_color="334155", end_color="334155", fill_type="solid")
+            c_cell.alignment = Alignment(horizontal="center", vertical="center")
+            c_cell.border = thin_border
+        current_row += 1
+        
+        start_data_row = current_row
+        if df.empty:
+            ws.row_dimensions[current_row].height = 20
+            ws.cell(row=current_row, column=1, value="None scheduled").border = thin_border
+            for col in range(2, 8):
+                ws.cell(row=current_row, column=col, value="").border = thin_border
+            ws.cell(row=current_row, column=8, value=0.0).border = thin_border
+            ws.cell(row=current_row, column=9, value=0.0).border = thin_border
+            ws.cell(row=current_row, column=10, value="").border = thin_border
+            current_row += 1
+            end_data_row = start_data_row
+        else:
+            for _, row in df.iterrows():
+                ws.row_dimensions[current_row].height = 20
+                ws.cell(row=current_row, column=1, value=row["subject_name"]).border = thin_border
+                ws.cell(row=current_row, column=2, value=row["section_code"]).border = thin_border
+                ws.cell(row=current_row, column=3, value=row["room"]).border = thin_border
+                
+                day_cell = ws.cell(row=current_row, column=4, value=row["day_of_week"])
+                day_cell.alignment = Alignment(horizontal="center")
+                day_cell.border = thin_border
+                
+                start_cell = ws.cell(row=current_row, column=5, value=row["start_time"])
+                start_cell.alignment = Alignment(horizontal="center")
+                start_cell.border = thin_border
+                
+                end_cell = ws.cell(row=current_row, column=6, value=row["end_time"])
+                end_cell.alignment = Alignment(horizontal="center")
+                end_cell.border = thin_border
+                
+                type_cell = ws.cell(row=current_row, column=7, value=row["type"])
+                type_cell.alignment = Alignment(horizontal="center")
+                type_cell.border = thin_border
+                
+                units_cell = ws.cell(row=current_row, column=8, value=row["units"])
+                units_cell.alignment = Alignment(horizontal="right")
+                units_cell.border = thin_border
+                
+                hours_cell = ws.cell(row=current_row, column=9, value=row["hours"])
+                hours_cell.alignment = Alignment(horizontal="right")
+                hours_cell.border = thin_border
+                
+                cat_cell = ws.cell(row=current_row, column=10, value=row["load_category"])
+                cat_cell.border = thin_border
+                current_row += 1
+            end_data_row = current_row - 1
+            
+        # Subtotal Row
+        subtotal_row = current_row
+        ws.row_dimensions[subtotal_row].height = 22
+        ws.merge_cells(start_row=subtotal_row, start_column=1, end_row=subtotal_row, end_column=7)
+        tot_label = ws.cell(row=subtotal_row, column=1, value=subtotal_label)
+        tot_label.font = Font(bold=True)
+        tot_label.alignment = Alignment(horizontal="right", vertical="center")
+        for col in range(1, 8):
+            ws.cell(row=subtotal_row, column=col).border = thin_border
+            ws.cell(row=subtotal_row, column=col).fill = PatternFill(start_color=SECONDARY_COLOR, end_color=SECONDARY_COLOR, fill_type="solid")
+            
+        cell_u = ws.cell(row=subtotal_row, column=8, value=f"=SUM(H{start_data_row}:H{end_data_row})")
+        cell_u.font = Font(bold=True)
+        cell_u.border = thin_border
+        cell_u.alignment = Alignment(horizontal="right")
+        cell_u.fill = PatternFill(start_color=SECONDARY_COLOR, end_color=SECONDARY_COLOR, fill_type="solid")
+        
+        cell_h = ws.cell(row=subtotal_row, column=9, value=f"=SUM(I{start_data_row}:I{end_data_row})")
+        cell_h.font = Font(bold=True)
+        cell_h.border = thin_border
+        cell_h.alignment = Alignment(horizontal="right")
+        cell_h.fill = PatternFill(start_color=SECONDARY_COLOR, end_color=SECONDARY_COLOR, fill_type="solid")
+        
+        ws.cell(row=subtotal_row, column=10).border = thin_border
+        ws.cell(row=subtotal_row, column=10).fill = PatternFill(start_color=SECONDARY_COLOR, end_color=SECONDARY_COLOR, fill_type="solid")
+        
+        current_row += 2 # Leave a spacer row
+        return subtotal_row
+        
+    sub_r1 = write_load_section("📘 1. REGULAR LOAD SCHEDULE", regular_classes, PRIMARY_COLOR, "Regular Load Subtotal")
+    sub_r2 = write_load_section("⚡ 2. EXCESS LOAD SCHEDULE", excess_classes, EXCESS_HEADER_COLOR, "Excess Load Subtotal")
+    sub_r3 = write_load_section("🏢 3. CONSULTATION / NON-TEACHING SCHEDULE", consultations, NON_TEACH_COLOR, "Consultation Subtotal")
+    
+    # Combined Totals Row
+    ws.row_dimensions[current_row].height = 24
+    ws.merge_cells(start_row=current_row, start_column=1, end_row=current_row, end_column=7)
+    tot_label = ws.cell(row=current_row, column=1, value="TOTAL LOAD (ALL CATEGORIES)")
+    tot_label.font = Font(bold=True, size=11)
+    tot_label.alignment = Alignment(horizontal="right", vertical="center")
     for col in range(1, 8):
-        ws.cell(row=total_row, column=col).border = thin_border
-        ws.cell(row=total_row, column=col).fill = PatternFill(start_color=SECONDARY_COLOR, end_color=SECONDARY_COLOR, fill_type="solid")
+        ws.cell(row=current_row, column=col).border = thin_border
+        ws.cell(row=current_row, column=col).fill = PatternFill(start_color=GRAND_TOTAL_COLOR, end_color=GRAND_TOTAL_COLOR, fill_type="solid")
         
-    # Excel Formulas
-    # Units formula
-    cell_units = ws.cell(row=total_row, column=8, value=f"=SUM(H4:H{total_row-1})")
-    cell_units.font = Font(bold=True)
-    cell_units.border = thin_border
-    cell_units.fill = PatternFill(start_color=SECONDARY_COLOR, end_color=SECONDARY_COLOR, fill_type="solid")
+    tot_u = ws.cell(row=current_row, column=8, value=f"=H{sub_r1}+H{sub_r2}+H{sub_r3}")
+    tot_u.font = Font(bold=True, size=11)
+    tot_u.border = thin_border
+    tot_u.alignment = Alignment(horizontal="right")
+    tot_u.fill = PatternFill(start_color=GRAND_TOTAL_COLOR, end_color=GRAND_TOTAL_COLOR, fill_type="solid")
     
-    # Hours formula
-    cell_hours = ws.cell(row=total_row, column=9, value=f"=SUM(I4:I{total_row-1})")
-    cell_hours.font = Font(bold=True)
-    cell_hours.border = thin_border
-    cell_hours.fill = PatternFill(start_color=SECONDARY_COLOR, end_color=SECONDARY_COLOR, fill_type="solid")
+    tot_h = ws.cell(row=current_row, column=9, value=f"=I{sub_r1}+I{sub_r2}+I{sub_r3}")
+    tot_h.font = Font(bold=True, size=11)
+    tot_h.border = thin_border
+    tot_h.alignment = Alignment(horizontal="right")
+    tot_h.fill = PatternFill(start_color=GRAND_TOTAL_COLOR, end_color=GRAND_TOTAL_COLOR, fill_type="solid")
     
-    # Category cell empty
-    ws.cell(row=total_row, column=10).border = thin_border
-    ws.cell(row=total_row, column=10).fill = PatternFill(start_color=SECONDARY_COLOR, end_color=SECONDARY_COLOR, fill_type="solid")
+    ws.cell(row=current_row, column=10).border = thin_border
+    ws.cell(row=current_row, column=10).fill = PatternFill(start_color=GRAND_TOTAL_COLOR, end_color=GRAND_TOTAL_COLOR, fill_type="solid")
     
-    # Columns width
-    ws.column_dimensions["A"].width = 24
+    # Column width formatting
+    ws.column_dimensions["A"].width = 26
     ws.column_dimensions["B"].width = 14
     ws.column_dimensions["C"].width = 12
     ws.column_dimensions["D"].width = 8
     ws.column_dimensions["E"].width = 12
     ws.column_dimensions["F"].width = 12
     ws.column_dimensions["G"].width = 8
-    ws.column_dimensions["H"].width = 8
-    ws.column_dimensions["I"].width = 8
+    ws.column_dimensions["H"].width = 10
+    ws.column_dimensions["I"].width = 10
     ws.column_dimensions["J"].width = 18
 
 def create_timesheet_sheet(wb, sheet_title, instructor, class_loads, year, month, cutoff_type, timesheet_data):
     ws = wb.create_sheet(title=sheet_title)
     ws.views.sheetView[0].showGridLines = True
+    thin_border = get_thin_border()
     
     # Generate dates for this cutoff
     dates = generate_cutoff_dates(year, month, cutoff_type)
@@ -310,15 +374,16 @@ def create_timesheet_sheet(wb, sheet_title, instructor, class_loads, year, month
     
     # Title Block
     ws.merge_cells(start_row=1, start_column=1, end_row=1, end_column=total_col_idx)
-    ws["A1"] = f"ACADEMIC TIMESHEET ({cutoff_type})"
+    ws["A1"] = f"ACADEMIC INSTRUCTOR TIMESHEET ({cutoff_type})"
     ws["A1"].font = Font(name="Calibri", size=16, bold=True, color=TEXT_LIGHT)
     ws["A1"].fill = PatternFill(start_color=PRIMARY_COLOR, end_color=PRIMARY_COLOR, fill_type="solid")
     ws["A1"].alignment = Alignment(horizontal="center", vertical="center")
-    ws.row_dimensions[1].height = 40
+    ws.row_dimensions[1].height = 36
     
     # Header metadata
     month_name = calendar.month_name[month]
     acad_level = instructor.get("academic_level", "Tertiary")
+    max_reg_units = 30.0 if acad_level == "SHS" else 24.0
     headers_meta = [
         ("Instructor Name:", instructor["name"], "Employment Status:", f"{instructor['employment_status']} ({acad_level})"),
         ("Cutoff Period:", f"{month_name} {cutoff_type}, {year}", "Department:", instructor.get("department", "N/A"))
@@ -330,188 +395,291 @@ def create_timesheet_sheet(wb, sheet_title, instructor, class_loads, year, month
         ws.cell(row=r_idx, column=5, value=row_data[2]).font = Font(bold=True)
         ws.cell(row=r_idx, column=6, value=row_data[3])
         
-    # Table headers: Date values and Weekdays
-    ws.cell(row=5, column=1, value="Activity Category").font = Font(bold=True, color=TEXT_LIGHT)
-    ws.cell(row=5, column=1).fill = PatternFill(start_color=PRIMARY_COLOR, end_color=PRIMARY_COLOR, fill_type="solid")
-    ws.cell(row=5, column=1).alignment = Alignment(vertical="center")
-    ws.cell(row=5, column=1).border = get_thin_border()
+    regular_classes = class_loads[class_loads["load_category"] == "Regular Load"] if not class_loads.empty else pd.DataFrame()
+    excess_classes = class_loads[class_loads["load_category"].isin(["Excess Load", "Excess/Overload"])] if not class_loads.empty else pd.DataFrame()
+    consultations = class_loads[class_loads["load_category"] == "Consultation"] if not class_loads.empty else pd.DataFrame()
     
-    ws.cell(row=5, column=2, value="Activity Details").font = Font(bold=True, color=TEXT_LIGHT)
-    ws.cell(row=5, column=2).fill = PatternFill(start_color=PRIMARY_COLOR, end_color=PRIMARY_COLOR, fill_type="solid")
-    ws.cell(row=5, column=2).alignment = Alignment(vertical="center")
-    ws.cell(row=5, column=2).border = get_thin_border()
+    current_row = 5
     
-    ws.cell(row=6, column=1).border = get_thin_border()
-    ws.cell(row=6, column=2).border = get_thin_border()
-    ws.merge_cells("A5:A6")
-    ws.merge_cells("B5:B6")
-    
-    # Fill Date Columns
-    thin_border = get_thin_border()
-    for idx, d_info in enumerate(dates):
-        c_idx = 3 + idx
-        c_let = get_column_letter(c_idx)
+    def write_timesheet_section(banner_title, banner_color, subtotal_title, subtotal_color, activity_items, default_cat):
+        nonlocal current_row
         
-        # Row 5: Day number
-        d_cell = ws.cell(row=5, column=c_idx, value=d_info['day_num'])
-        d_cell.font = Font(bold=True)
-        d_cell.alignment = Alignment(horizontal="center")
-        d_cell.border = thin_border
+        # 1. Section Banner
+        ws.merge_cells(start_row=current_row, start_column=1, end_row=current_row, end_column=total_col_idx)
+        b_cell = ws.cell(row=current_row, column=1, value=banner_title)
+        b_cell.font = Font(name="Calibri", size=11, bold=True, color=TEXT_LIGHT)
+        b_cell.alignment = Alignment(horizontal="left", vertical="center")
+        for col in range(1, total_col_idx + 1):
+            ws.cell(row=current_row, column=col).border = thin_border
+            ws.cell(row=current_row, column=col).fill = PatternFill(start_color=banner_color, end_color=banner_color, fill_type="solid")
+        ws.row_dimensions[current_row].height = 24
+        current_row += 1
         
-        # Row 6: Day Abbreviation
-        abbr_cell = ws.cell(row=6, column=c_idx, value=d_info['day_abbr'])
-        abbr_cell.font = Font(bold=True, size=9)
-        abbr_cell.alignment = Alignment(horizontal="center")
-        abbr_cell.border = thin_border
+        # 2. Table Column Headers
+        h1_row = current_row
+        h2_row = current_row + 1
+        ws.row_dimensions[h1_row].height = 18
+        ws.row_dimensions[h2_row].height = 18
         
-        # Highlight Saturdays & Sundays
-        if d_info['day_abbr'] in ("S", "SU"):
-            d_cell.fill = PatternFill(start_color=WEEKEND_COLOR, end_color=WEEKEND_COLOR, fill_type="solid")
-            abbr_cell.fill = PatternFill(start_color=WEEKEND_COLOR, end_color=WEEKEND_COLOR, fill_type="solid")
+        # Col 1: Category
+        ws.merge_cells(start_row=h1_row, start_column=1, end_row=h2_row, end_column=1)
+        ws.cell(row=h1_row, column=1, value="Category").font = Font(bold=True, size=9, color=TEXT_LIGHT)
+        ws.cell(row=h1_row, column=1).alignment = Alignment(horizontal="center", vertical="center")
+        
+        # Col 2: Details
+        ws.merge_cells(start_row=h1_row, start_column=2, end_row=h2_row, end_column=2)
+        ws.cell(row=h1_row, column=2, value="Activity / Course Details").font = Font(bold=True, size=9, color=TEXT_LIGHT)
+        ws.cell(row=h1_row, column=2).alignment = Alignment(horizontal="center", vertical="center")
+        
+        for c in (1, 2):
+            for r in (h1_row, h2_row):
+                ws.cell(row=r, column=c).border = thin_border
+                ws.cell(row=r, column=c).fill = PatternFill(start_color="334155", end_color="334155", fill_type="solid")
+                
+        # Date Columns
+        for d_idx, d_info in enumerate(dates):
+            c_idx = 3 + d_idx
             
-    # Row 5/6 Total Column
-    ws.merge_cells(start_row=5, start_column=total_col_idx, end_row=6, end_column=total_col_idx)
-    tot_header = ws.cell(row=5, column=total_col_idx, value="Total Hours")
-    tot_header.font = Font(bold=True, color=TEXT_LIGHT)
-    tot_header.fill = PatternFill(start_color=PRIMARY_COLOR, end_color=PRIMARY_COLOR, fill_type="solid")
-    tot_header.alignment = Alignment(horizontal="center", vertical="center")
-    tot_header.border = thin_border
-    
-    ws.row_dimensions[5].height = 18
-    ws.row_dimensions[6].height = 18
-    
-    # Construct rows of activities
-    # Separate Regular Load and Excess Load
-    regular_classes = class_loads[class_loads["load_category"] == "Regular Load"]
-    excess_classes = class_loads[class_loads["load_category"].isin(["Excess Load", "Excess/Overload"])]
-    
-    activity_rows = []
-    
-    # Section A: Regular Load
-    for _, cl in regular_classes.iterrows():
-        key_name = f"{cl['type']}: {cl['subject_name']} ({cl['section_code']})"
-        activity_rows.append(("Regular Load", key_name, key_name))
+            # Row H1: Day number
+            d_cell = ws.cell(row=h1_row, column=c_idx, value=d_info['day_num'])
+            d_cell.font = Font(bold=True, size=9, color=TEXT_LIGHT)
+            d_cell.alignment = Alignment(horizontal="center", vertical="center")
+            d_cell.border = thin_border
+            d_cell.fill = PatternFill(start_color="334155", end_color="334155", fill_type="solid")
+            
+            # Row H2: Day Abbr
+            abbr_cell = ws.cell(row=h2_row, column=c_idx, value=d_info['day_abbr'])
+            abbr_cell.font = Font(bold=True, size=8.5, color=TEXT_LIGHT)
+            abbr_cell.alignment = Alignment(horizontal="center", vertical="center")
+            abbr_cell.border = thin_border
+            abbr_cell.fill = PatternFill(start_color="334155", end_color="334155", fill_type="solid")
+            
+            # Weekend header highlight
+            if d_info['day_abbr'] in ("S", "SU"):
+                d_cell.fill = PatternFill(start_color="475569", end_color="475569", fill_type="solid")
+                abbr_cell.fill = PatternFill(start_color="475569", end_color="475569", fill_type="solid")
+                
+        # Total Column Header
+        ws.merge_cells(start_row=h1_row, start_column=total_col_idx, end_row=h2_row, end_column=total_col_idx)
+        tot_header = ws.cell(row=h1_row, column=total_col_idx, value="Total Hours")
+        tot_header.font = Font(bold=True, size=9, color=TEXT_LIGHT)
+        tot_header.alignment = Alignment(horizontal="center", vertical="center")
+        for r in (h1_row, h2_row):
+            ws.cell(row=r, column=total_col_idx).border = thin_border
+            ws.cell(row=r, column=total_col_idx).fill = PatternFill(start_color="334155", end_color="334155", fill_type="solid")
+            
+        current_row += 2
         
-    # Section B: Excess Load
-    for _, cl in excess_classes.iterrows():
-        key_name = f"{cl['type']}: {cl['subject_name']} ({cl['section_code']})"
-        activity_rows.append(("Excess Load", key_name, key_name))
+        # 3. Data Rows
+        start_data_row = current_row
+        if not activity_items:
+            ws.row_dimensions[current_row].height = 20
+            c_cell = ws.cell(row=current_row, column=1, value=default_cat)
+            c_cell.border = thin_border
+            d_cell = ws.cell(row=current_row, column=2, value=f"No {default_cat} activities scheduled")
+            d_cell.border = thin_border
+            d_cell.font = Font(italic=True, color="64748B")
+            
+            for d_idx, d_info in enumerate(dates):
+                col_idx = 3 + d_idx
+                h_cell = ws.cell(row=current_row, column=col_idx, value=0.0)
+                h_cell.alignment = Alignment(horizontal="right")
+                h_cell.border = thin_border
+                if d_info['day_abbr'] in ("S", "SU"):
+                    h_cell.fill = PatternFill(start_color=WEEKEND_COLOR, end_color=WEEKEND_COLOR, fill_type="solid")
+                    
+            t_cell = ws.cell(row=current_row, column=total_col_idx, value=f"=SUM(C{current_row}:{last_col_letter}{current_row})")
+            t_cell.font = Font(bold=True)
+            t_cell.alignment = Alignment(horizontal="right")
+            t_cell.border = thin_border
+            t_cell.fill = PatternFill(start_color=SECONDARY_COLOR, end_color=SECONDARY_COLOR, fill_type="solid")
+            current_row += 1
+            end_data_row = start_data_row
+        else:
+            for cat, detail, key_name in activity_items:
+                r_num = current_row
+                ws.row_dimensions[r_num].height = 20
+                
+                c_cell = ws.cell(row=r_num, column=1, value=cat)
+                c_cell.border = thin_border
+                
+                d_cell = ws.cell(row=r_num, column=2, value=detail)
+                d_cell.border = thin_border
+                
+                # Write hours for each date
+                for d_idx, d_info in enumerate(dates):
+                    col_idx = 3 + d_idx
+                    date_str = d_info['date'].strftime("%Y-%m-%d")
+                    
+                    val = timesheet_data.get((key_name, date_str))
+                    if val is None:
+                        if cat == "Regular Load":
+                            val = 0.0
+                            for _, cl in regular_classes.iterrows():
+                                cl_key = f"{cl['type']}: {cl['subject_name']} ({cl['section_code']})"
+                                if cl_key == key_name and cl['day_of_week'] == d_info['day_abbr']:
+                                    val = cl['hours']
+                                    break
+                        elif cat == "Excess Load":
+                            val = 0.0
+                            for _, cl in excess_classes.iterrows():
+                                cl_key = f"{cl['type']}: {cl['subject_name']} ({cl['section_code']})"
+                                if cl_key == key_name and cl['day_of_week'] == d_info['day_abbr']:
+                                    val = cl['hours']
+                                    break
+                        elif key_name == "Consultation":
+                            val = 0.0
+                            for _, cl in consultations.iterrows():
+                                if cl['day_of_week'] == d_info['day_abbr']:
+                                    val = cl['hours']
+                                    break
+                        else:
+                            val = 0.0
+                            
+                    h_cell = ws.cell(row=r_num, column=col_idx, value=val)
+                    h_cell.alignment = Alignment(horizontal="right")
+                    h_cell.border = thin_border
+                    if d_info['day_abbr'] in ("S", "SU"):
+                        h_cell.fill = PatternFill(start_color=WEEKEND_COLOR, end_color=WEEKEND_COLOR, fill_type="solid")
+                        
+                # Total Formula for the row
+                tot_formula = f"=SUM(C{r_num}:{last_col_letter}{r_num})"
+                t_cell = ws.cell(row=r_num, column=total_col_idx, value=tot_formula)
+                t_cell.font = Font(bold=True)
+                t_cell.alignment = Alignment(horizontal="right")
+                t_cell.border = thin_border
+                t_cell.fill = PatternFill(start_color=SECONDARY_COLOR, end_color=SECONDARY_COLOR, fill_type="solid")
+                
+                current_row += 1
+            end_data_row = current_row - 1
+            
+        # 4. Subtotal Row
+        subtotal_row = current_row
+        ws.row_dimensions[subtotal_row].height = 22
+        ws.merge_cells(start_row=subtotal_row, start_column=1, end_row=subtotal_row, end_column=2)
+        sub_label = ws.cell(row=subtotal_row, column=1, value=subtotal_title)
+        sub_label.font = Font(bold=True)
+        sub_label.alignment = Alignment(horizontal="right", vertical="center")
         
-    # Section C: Non-Teaching SC
-    activity_rows.append(("Non-Teaching SC", "Career Orientation Seminars (COS)", "Career Orientation Seminars (COS)"))
-    activity_rows.append(("Non-Teaching SC", "Guidance/Counseling", "Guidance/Counseling"))
-    
-    # Section D: Non-Teaching HQ
-    activity_rows.append(("Non-Teaching HQ", "Consultation", "Consultation"))
-    activity_rows.append(("Non-Teaching HQ", "Administrative Hours", "Administrative Hours"))
-    
-    # Write Row Contents
-    start_data_row = 7
-    for idx, (cat, detail, key_name) in enumerate(activity_rows):
-        r_num = start_data_row + idx
-        ws.row_dimensions[r_num].height = 20
-        
-        c_cell = ws.cell(row=r_num, column=1, value=cat)
-        c_cell.border = thin_border
-        
-        d_cell = ws.cell(row=r_num, column=2, value=detail)
-        d_cell.border = thin_border
-        
-        # Write hours for each date
+        for col in range(1, 3):
+            ws.cell(row=subtotal_row, column=col).border = thin_border
+            ws.cell(row=subtotal_row, column=col).fill = PatternFill(start_color=subtotal_color, end_color=subtotal_color, fill_type="solid")
+            
+        # Daily subtotal formulas
         for d_idx, d_info in enumerate(dates):
             col_idx = 3 + d_idx
-            date_str = d_info['date'].strftime("%Y-%m-%d")
+            col_let = get_column_letter(col_idx)
+            sub_formula = f"=SUM({col_let}{start_data_row}:{col_let}{end_data_row})"
             
-            # Check for overrides first
-            val = timesheet_data.get((key_name, date_str))
+            s_cell = ws.cell(row=subtotal_row, column=col_idx, value=sub_formula)
+            s_cell.font = Font(bold=True)
+            s_cell.alignment = Alignment(horizontal="right")
+            s_cell.border = thin_border
+            s_cell.fill = PatternFill(start_color=subtotal_color, end_color=subtotal_color, fill_type="solid")
             
-            if val is None:
-                # If no override, auto-populate regular / excess / consultation
-                if cat == "Regular Load":
-                    val = 0.0
-                    for _, cl in regular_classes.iterrows():
-                        cl_key = f"{cl['type']}: {cl['subject_name']} ({cl['section_code']})"
-                        if cl_key == key_name and cl['day_of_week'] == d_info['day_abbr']:
-                            val = cl['hours']
-                            break
-                elif cat == "Excess Load":
-                    val = 0.0
-                    for _, cl in excess_classes.iterrows():
-                        cl_key = f"{cl['type']}: {cl['subject_name']} ({cl['section_code']})"
-                        if cl_key == key_name and cl['day_of_week'] == d_info['day_abbr']:
-                            val = cl['hours']
-                            break
-                elif cat == "Teaching Activities": # Fallback for backwards compatibility
-                    val = 0.0
-                    for _, cl in pd.concat([regular_classes, excess_classes]).iterrows():
-                        cl_key = f"{cl['type']}: {cl['subject_name']} ({cl['section_code']})"
-                        if cl_key == key_name and cl['day_of_week'] == d_info['day_abbr']:
-                            val = cl['hours']
-                            break
-                elif key_name == "Consultation":
-                    # Pre-populate consultation from scheduled consultation
-                    val = 0.0
-                    consultations = class_loads[class_loads["load_category"] == "Consultation"]
-                    for _, cl in consultations.iterrows():
-                        if cl['day_of_week'] == d_info['day_abbr']:
-                            val = cl['hours']
-                            break
-                else:
-                    val = 0.0
-                    
-            # Write value
-            h_cell = ws.cell(row=r_num, column=col_idx, value=val)
-            h_cell.alignment = Alignment(horizontal="right")
-            h_cell.border = thin_border
-            
-            # Shading for weekend cells in data rows
-            if d_info['day_abbr'] in ("S", "SU"):
-                h_cell.fill = PatternFill(start_color=WEEKEND_COLOR, end_color=WEEKEND_COLOR, fill_type="solid")
-                
-        # Total Formula for the row
-        tot_formula = f"=SUM(C{r_num}:{last_col_letter}{r_num})"
-        t_cell = ws.cell(row=r_num, column=total_col_idx, value=tot_formula)
-        t_cell.font = Font(bold=True)
-        t_cell.alignment = Alignment(horizontal="right")
-        t_cell.border = thin_border
-        t_cell.fill = PatternFill(start_color=SECONDARY_COLOR, end_color=SECONDARY_COLOR, fill_type="solid")
+        # Subtotal total formula
+        sub_tot_formula = f"=SUM({total_col_letter}{start_data_row}:{total_col_letter}{end_data_row})"
+        st_cell = ws.cell(row=subtotal_row, column=total_col_idx, value=sub_tot_formula)
+        st_cell.font = Font(bold=True)
+        st_cell.alignment = Alignment(horizontal="right")
+        st_cell.border = thin_border
+        st_cell.fill = PatternFill(start_color=subtotal_color, end_color=subtotal_color, fill_type="solid")
         
-    # Daily Totals Row
-    total_row_idx = start_data_row + len(activity_rows)
-    ws.row_dimensions[total_row_idx].height = 22
+        current_row += 2 # leave blank row
+        return subtotal_row
+        
+    # Build list of items for each section
+    reg_items = []
+    for _, cl in regular_classes.iterrows():
+        key_name = f"{cl['type']}: {cl['subject_name']} ({cl['section_code']})"
+        reg_items.append(("Regular Load", key_name, key_name))
+        
+    exc_items = []
+    for _, cl in excess_classes.iterrows():
+        key_name = f"{cl['type']}: {cl['subject_name']} ({cl['section_code']})"
+        exc_items.append(("Excess Load", key_name, key_name))
+        
+    non_items = [
+        ("Non-Teaching SC", "Career Orientation Seminars (COS)", "Career Orientation Seminars (COS)"),
+        ("Non-Teaching SC", "Guidance/Counseling", "Guidance/Counseling"),
+        ("Non-Teaching HQ", "Consultation", "Consultation"),
+        ("Non-Teaching HQ", "Administrative Hours", "Administrative Hours")
+    ]
     
-    # Labels
-    ws.cell(row=total_row_idx, column=1, value="Daily Totals").font = Font(bold=True)
-    ws.cell(row=total_row_idx, column=1).border = thin_border
-    ws.cell(row=total_row_idx, column=1).fill = PatternFill(start_color=SECONDARY_COLOR, end_color=SECONDARY_COLOR, fill_type="solid")
+    # 1. Regular Load Section
+    sub_r1 = write_timesheet_section(
+        f"📘 1. REGULAR LOAD TIMESHEET (Regular Cap: {max_reg_units:.0f} Units - {acad_level})",
+        PRIMARY_COLOR,
+        "Regular Load Subtotal",
+        SECONDARY_COLOR,
+        reg_items,
+        "Regular Load"
+    )
     
-    ws.cell(row=total_row_idx, column=2, value="").border = thin_border
-    ws.cell(row=total_row_idx, column=2).fill = PatternFill(start_color=SECONDARY_COLOR, end_color=SECONDARY_COLOR, fill_type="solid")
-    ws.merge_cells(start_row=total_row_idx, start_column=1, end_row=total_row_idx, end_column=2)
+    # 2. Excess Load Section
+    sub_r2 = write_timesheet_section(
+        "⚡ 2. EXCESS LOAD TIMESHEET (Overload / Additional Teaching)",
+        EXCESS_HEADER_COLOR,
+        "Excess Load Subtotal",
+        EXCESS_SUB_COLOR,
+        exc_items,
+        "Excess Load"
+    )
     
-    # Formulas for columns
+    # 3. Non-Teaching Section
+    sub_r3 = write_timesheet_section(
+        "🏢 3. NON-TEACHING ACTIVITIES (SC & HQ)",
+        NON_TEACH_COLOR,
+        "Non-Teaching Subtotal",
+        SECONDARY_COLOR,
+        non_items,
+        "Non-Teaching"
+    )
+    
+    # 4. Consolidated Daily & Grand Totals Section
+    cons_banner_row = current_row
+    ws.merge_cells(start_row=cons_banner_row, start_column=1, end_row=cons_banner_row, end_column=total_col_idx)
+    cb_cell = ws.cell(row=cons_banner_row, column=1, value="CONSOLIDATED DAILY & GRAND TOTALS (ALL ACTIVITIES)")
+    cb_cell.font = Font(name="Calibri", size=11, bold=True, color=TEXT_LIGHT)
+    cb_cell.alignment = Alignment(horizontal="left", vertical="center")
+    for col in range(1, total_col_idx + 1):
+        ws.cell(row=cons_banner_row, column=col).border = thin_border
+        ws.cell(row=cons_banner_row, column=col).fill = PatternFill(start_color=PRIMARY_COLOR, end_color=PRIMARY_COLOR, fill_type="solid")
+    ws.row_dimensions[cons_banner_row].height = 24
+    current_row += 1
+    
+    tot_row_idx = current_row
+    ws.row_dimensions[tot_row_idx].height = 24
+    
+    ws.merge_cells(start_row=tot_row_idx, start_column=1, end_row=tot_row_idx, end_column=2)
+    tot_label = ws.cell(row=tot_row_idx, column=1, value="DAILY TOTALS (ALL ACTIVITIES)")
+    tot_label.font = Font(bold=True, size=10)
+    tot_label.alignment = Alignment(horizontal="right", vertical="center")
+    for col in range(1, 3):
+        ws.cell(row=tot_row_idx, column=col).border = thin_border
+        ws.cell(row=tot_row_idx, column=col).fill = PatternFill(start_color=SECONDARY_COLOR, end_color=SECONDARY_COLOR, fill_type="solid")
+        
     for d_idx, d_info in enumerate(dates):
         c_idx = 3 + d_idx
         col_let = get_column_letter(c_idx)
-        daily_formula = f"=SUM({col_let}{start_data_row}:{col_let}{total_row_idx-1})"
+        daily_formula = f"={col_let}{sub_r1}+{col_let}{sub_r2}+{col_let}{sub_r3}"
         
-        d_tot_cell = ws.cell(row=total_row_idx, column=c_idx, value=daily_formula)
+        d_tot_cell = ws.cell(row=tot_row_idx, column=c_idx, value=daily_formula)
         d_tot_cell.font = Font(bold=True)
         d_tot_cell.alignment = Alignment(horizontal="right")
         d_tot_cell.border = thin_border
         d_tot_cell.fill = PatternFill(start_color=SECONDARY_COLOR, end_color=SECONDARY_COLOR, fill_type="solid")
         
-    # Grand Total formula
-    grand_formula = f"=SUM({total_col_letter}{start_data_row}:{total_col_letter}{total_row_idx-1})"
-    g_cell = ws.cell(row=total_row_idx, column=total_col_idx, value=grand_formula)
+    grand_formula = f"={total_col_letter}{sub_r1}+{total_col_letter}{sub_r2}+{total_col_letter}{sub_r3}"
+    g_cell = ws.cell(row=tot_row_idx, column=total_col_idx, value=grand_formula)
     g_cell.font = Font(bold=True, size=11, color="000000")
     g_cell.alignment = Alignment(horizontal="right")
     g_cell.border = thin_border
-    g_cell.fill = PatternFill(start_color="C6EFCE", end_color="C6EFCE", fill_type="solid") # Soft Green fill for grand total
+    g_cell.fill = PatternFill(start_color=GRAND_TOTAL_COLOR, end_color=GRAND_TOTAL_COLOR, fill_type="solid")
     
     # Column width formatting
     ws.column_dimensions["A"].width = 18
-    ws.column_dimensions["B"].width = 28
+    ws.column_dimensions["B"].width = 30
     for col in range(3, last_col_idx + 1):
         ws.column_dimensions[get_column_letter(col)].width = 6
     ws.column_dimensions[total_col_letter].width = 12
